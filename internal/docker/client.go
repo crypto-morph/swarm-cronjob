@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/crazy-max/swarm-cronjob/internal/model"
@@ -44,7 +45,10 @@ func NewEnvClient() (*DockerClient, error) {
 		return nil, err
 	}
 
-	dockerCli, err := command.NewDockerCli()
+	dockerCli, err := command.NewDockerCli(
+		command.WithCombinedStreams(os.Stderr),
+		command.WithContentTrustFromEnv(),
+	)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create Docker cli")
 	}
