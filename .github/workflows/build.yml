@@ -12,6 +12,10 @@ on:
       - 'v*'
   pull_request:
 
+permissions:
+  contents: read
+  packages: write
+
 env:
   DESTDIR: ./bin
 
