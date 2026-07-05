@@ -12,10 +12,20 @@
   <a href="https://www.paypal.me/crazyws"><img src="https://img.shields.io/badge/donate-paypal-00457c.svg?logo=paypal&style=flat-square" alt="Donate Paypal"></a>
 </p>
 
-> **THIS PROJECT SHOULD NOT BE RELIED UPON**
-> 
-> This project is a short team fix until https://github.com/crazy-max/swarm-cronjob/issues/307 has been remediated
+> **Maintained fork for Docker 25+ / API negotiation**
 >
+> Upstream [crazy-max/swarm-cronjob#307](https://github.com/crazy-max/swarm-cronjob/issues/307) was fixed in upstream, but the VoiNetwork `:edge` image still pins Docker API `1.28` and fails on Docker 29+.
+>
+> This fork publishes a working image: **`ghcr.io/crypto-morph/swarm-cronjob:edge`** (public, no login required).
+>
+> See [FIX_GUIDE.md](FIX_GUIDE.md) for deployment and troubleshooting.
+
+## Quick start (Docker Swarm)
+
+```bash
+docker pull ghcr.io/crypto-morph/swarm-cronjob:edge
+docker service update --image ghcr.io/crypto-morph/swarm-cronjob:edge voinetwork_scheduler
+```
 
 ## About
 

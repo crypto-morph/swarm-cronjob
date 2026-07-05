@@ -1,107 +1,92 @@
-# Swarm-Cronjob Docker SDK v27 Fix Guide
+# Swarm-Cronjob Fix Guide (crypto-morph fork)
 
 ## Problem
 
-After upgrading to Docker SDK v27 and Go 1.23, the swarm-cronjob service fails to start in Docker Swarm with exit code 1, showing `0/1` replicas running. The service works fine when run directly with `docker run` but fails in Swarm.
+After upgrading Docker Engine (especially v29+), `voinetwork_scheduler` crash-loops every ~5 seconds with:
 
-**Root Cause:** The `command.NewDockerCli()` initialization in Docker SDK v27 applies default options that try to access Docker config files and set up terminal streams, which fail in the Swarm container environment.
-
-## Fix
-
-### Step 1: Update the Code
-
-Edit `internal/docker/client.go`:
-
-**Add the `os` import:**
-
-```diff
- import (
- 	"context"
-+	"os"
- 	"strings"
-
- 	"github.com/crazy-max/swarm-cronjob/internal/model"
+```
+Cannot initialize swarm-cronjob error="Error response from daemon: client version 1.28 is too old. Minimum supported API version is 1.40, please upgrade your client to a newer version"
 ```
 
-**Update the Docker CLI initialization (around line 47):**
+This is the same class of bug as [crazy-max/swarm-cronjob#307](https://github.com/crazy-max/swarm-cronjob/issues/307): the image embeds a Docker API client pinned to an old version that newer Docker daemons reject.
 
-```diff
--	dockerCli, err := command.NewDockerCli()
-+	dockerCli, err := command.NewDockerCli(
-+		command.WithCombinedStreams(os.Stderr),
-+		command.WithContentTrustFromEnv(),
-+	)
- 	if err != nil {
- 		return nil, errors.Wrap(err, "failed to create Docker cli")
- 	}
-```
+The VoiNetwork `:edge` image on GHCR still pins API `1.28`. Docker 29 requires API `1.40` minimum.
 
-### Step 2: Build the Fixed Docker Image
+## Recommended fix: use the public image
+
+A fixed image is published from this fork:
 
 ```bash
-# Navigate to the swarm-cronjob directory
-cd /path/to/swarm-cronjob
-
-# Build the Docker image
-docker build -t ghcr.io/voinetwork/swarm-cronjob:edge-fix .
+docker pull ghcr.io/crypto-morph/swarm-cronjob:edge
+docker service update --image ghcr.io/crypto-morph/swarm-cronjob:edge voinetwork_scheduler
 ```
 
-### Step 3: Update the Swarm Service
+Verify:
 
 ```bash
-# Update the service to use the fixed image
-docker service update --image ghcr.io/voinetwork/swarm-cronjob:edge-fix voinetwork_scheduler
-
-# Wait for the service to converge (about 30 seconds)
-# You should see "Service voinetwork_scheduler converged"
-```
-
-### Step 4: Verify the Fix
-
-```bash
-# Check that the service is running (should show 1/1 replicas)
-docker service ls
-
-# Verify the task is running
-docker service ps voinetwork_scheduler --filter "desired-state=running"
-
-# Check the logs to confirm it started successfully
+docker service ls | grep scheduler          # expect 1/1
 docker service logs voinetwork_scheduler --tail 5
 ```
 
-You should see logs like:
+Expected log lines:
+
 ```
-[90mSun, 18 Jan 2026 22:44:11 UTC[0m [32mINF[0m [1mStarting swarm-cronjob 94813ba.m[0m
-[90mSun, 18 Jan 2026 22:44:11 UTC[0m [32mINF[0m [1mAdd cronjob with schedule 4 */3 * * *[0m [36mservice=[0mvoinetwork_shepherd
+INF Starting swarm-cronjob <commit>
+INF Add cronjob with schedule ... service=voinetwork_shepherd
 ```
 
-## Quick One-Liner Test
+## Update compose for future stack deploys
 
-To quickly test if this is the issue on another server:
+In `docker/compose.yml` (or profile-specific yml), set:
+
+```yaml
+scheduler:
+  image: ghcr.io/crypto-morph/swarm-cronjob:edge
+```
+
+Then redeploy if needed:
 
 ```bash
-# Check if the service is failing
+docker stack deploy -c docker/compose.yml voinetwork
+```
+
+## Does algod still auto-update?
+
+Yes. The update chain is unchanged:
+
+1. **scheduler** (swarm-cronjob) — runs continuously, triggers shepherd on cron
+2. **shepherd** — runs once per trigger, pulls `:latest` images and updates swarm services
+3. **algod** — updated by shepherd (`ghcr.io/voinetwork/voi-node-participation-mainnet:latest`)
+
+Shepherd is intentionally `replicas: 0`; it only runs when the scheduler fires its cron job.
+
+## Build from source (optional)
+
+Repository: https://github.com/crypto-morph/swarm-cronjob
+
+```bash
+git clone https://github.com/crypto-morph/swarm-cronjob.git
+cd swarm-cronjob
+docker build -t ghcr.io/crypto-morph/swarm-cronjob:edge .
+```
+
+CI also builds and pushes `:edge` on every push to `master`.
+
+## What was fixed in code
+
+Two changes in `internal/docker/client.go`:
+
+1. **API version negotiation** — replace `client.WithVersion("1.28")` with `client.WithAPIVersionNegotiation()`
+2. **Docker CLI init for Swarm** — use minimal `command.NewDockerCli()` options for container environments
+
+See branch `modernize-docker27-go123` history for details.
+
+## Quick diagnostic
+
+```bash
 docker service ps voinetwork_scheduler --no-trunc | grep -i failed
+docker service logs voinetwork_scheduler --tail 20
+docker version   # check Server API version
 ```
 
-If you see multiple failed tasks with "task: non-zero exit (1)", this fix will resolve it.
-
-## Alternative: Use Pre-built Image
-
-If you don't want to build locally, you can push the image to a registry first:
-
-```bash
-# On the working server, tag and push the image
-docker tag ghcr.io/voinetwork/swarm-cronjob:edge-fix ghcr.io/voinetwork/swarm-cronjob:fixed
-docker push ghcr.io/voinetwork/swarm-cronjob:fixed
-
-# On the other server, update the service
-docker service update --image ghcr.io/voinetwork/swarm-cronjob:fixed voinetwork_scheduler
-```
-
-## Notes
-
-- The fix removes filesystem dependencies from the Docker CLI initialization
-- Only minimal options are provided: combined streams and content trust from environment
-- This is sufficient for the authentication functionality needed by swarm-cronjob
-- The fix works with Docker SDK v27 and Go 1.23
+If you see repeated `Failed` tasks and the API version error above, switch to `ghcr.io/crypto-morph/swarm-cronjob:edge`.
